@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+import json
+import sys
+import time
+import os
+
+try:
+    import requests
+    from requests.auth import HTTPBasicAuth
+except Exception as e:
+    print("No module 'requests' found. Install: pip install requests")
+    sys.exit(1)
+
+# ossec.conf configuration:
+#   <integration>
+#       <name>syncro</name>
+#       <hook_url>xyzcorp</hook_url>
+#       <api_key>XXXXXX</apikey>
+#       <alert_format>json</alert_format>
+#   </integration>
+
+# Global vars
+debug_enabled = True
+pwd = os.path.dirname(os.path.realpath(__file__))
+json_alert = {}
+now = time.strftime("%a %b %d %H:%M:%S %Z %Y")
+
+base_url = ""
+api_key = ""
+
+headers = {
+    'accept': 'application/json',
+    'Authorization': api_key
+}
+
+# Set paths
+log_file = '{0}/logs/integrations.log'.format(pwd)
+
+def main(args):
+    debug("# Starting")
+
+    # Read args
+    alert_file = open(args[1])
+    api_key = args[2]
+    base_url = 'https://{0}.syncromsp.com/api/v1'.format(args[3])
+
+    headers['Authorization'] = api_key
+
+    debug(alert_file)
+    debug(api_key)
+    debug(base_url)
+
+    # Read the alert file
+    alert_json = json.loads(alert_file.read())
+    alert_file.close()
+
+    debug(alert_json)
+
+    alert_level = alert_json['rule']['level']
+    ruleid = alert_json['rule']['id']
+    description = alert_json['rule']['description']
+    agent_name = alert_json['agent']['name']
+
+    location = alert_json['location']
+
+    alert_message = ''
+    tenant_id = ''
+
+    debug(location)
+    if location == 'office365':
+        debug('Office365 type alert')
+        if alert_json['data']['office365']['Operation'] == 'TIMailData':
+            recipients = alert_json['data']['office365']['Recipients']
+            msg_subject = alert_json['data']['office365']['Subject']
+            msg_id = alert_json['data']['office365']['InternetMessageId']
+            sender_ip = alert_json['data']['office365']['SenderIp']
+            verdict = alert_json['data']['office365']['Verdict']
+            deep_link = alert_json['data']['office365']['EventDeepLink']
+            tenant_id = alert_json['data']['office365']['OrganizationId']
+            alert_message = "{0}\nRecipients: {1}\nSubject: {2}\nMessage ID: {3}\nSender IP: {4}\n{5}".format(description, recipients, msg_subject, msg_id, sender_ip, deep_link)
+    else:
+        alert_message = alert_json['full_log']
+
+    asset = get_asset(base_url, api_key, agent_name)
+
+    if (asset['meta']['total_entries']):
+        # We have an asset
+        asset_id = asset['assets'][0]['id']
+        customer_id = asset['assets'][0]['customer_id']
+    else:
+        # No asset... what now?
+        customer_id = get_customer(base_url, api_key, tenant_id)['id']
+        asset_id = ''
+    
+    create_alert(base_url, api_key, asset_id, customer_id, alert_message)
+
+def get_customer(base_url, api_key, tenant_id):
+    response = requests.get('{0}/customers'.format(base_url), headers=headers)
+    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+    customers = json.loads(response.text)['customers']
+    return list(filter(lambda customer: 'MS365 Tenant ID' in customer['properties'] and customer['properties']['MS365 Tenant ID'] == tenant_id, customers))[0]
+
+
+def get_asset(base_url, api_key, agent_name):
+    params = {
+        'query': agent_name,
+    }
+    response = requests.get('{0}/customer_assets'.format(base_url), params=params, headers=headers)
+    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+    return json.loads(response.text)
+
+def create_alert(base_url, api_key, asset_id, customer_id, message):
+    data = {
+        'customer_id': customer_id,
+        'asset_id': asset_id,
+        'description': "Wazuh Alert",
+        'properties': {
+            'description': message
+        },
+        'formatted_output': message
+    }
+    response = requests.post('{0}/rmm_alerts'.format(base_url), json=data, headers=headers)
+    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+
+
+def debug(msg):
+    if debug_enabled:
+        msg = "{0}: {1}\n".format(now, msg)
+        print(msg)
+        f = open(log_file, "a")
+        f.write(msg)
+        f.close()
+
+if __name__ == "__main__":
+    main(sys.argv)
+    sys.exit(0)
