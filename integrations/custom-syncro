@@ -22,7 +22,7 @@ except Exception as e:
 
 # Global vars
 debug_enabled = True
-pwd = os.path.dirname(os.path.realpath(__file__))
+pwd = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 json_alert = {}
 now = time.strftime("%a %b %d %H:%M:%S %Z %Y")
 
@@ -48,7 +48,6 @@ def main(args):
     headers['Authorization'] = api_key
 
     debug(alert_file)
-    debug(api_key)
     debug(base_url)
 
     # Read the alert file
@@ -67,25 +66,33 @@ def main(args):
     alert_message = ''
     tenant_id = ''
 
-    debug(location)
-    if location == 'office365':
-        debug('Office365 type alert')
-        if alert_json['data']['office365']['Operation'] == 'TIMailData':
-            recipients = alert_json['data']['office365']['Recipients']
-            msg_subject = alert_json['data']['office365']['Subject']
-            msg_id = alert_json['data']['office365']['InternetMessageId']
-            sender_ip = alert_json['data']['office365']['SenderIp']
-            verdict = alert_json['data']['office365']['Verdict']
-            deep_link = alert_json['data']['office365']['EventDeepLink']
-            tenant_id = alert_json['data']['office365']['OrganizationId']
-            alert_message = "{0}\nRecipients: {1}\nSubject: {2}\nMessage ID: {3}\nSender IP: {4}\n{5}".format(description, recipients, msg_subject, msg_id, sender_ip, deep_link)
-    else:
-        alert_message = alert_json['full_log']
+    match location:
+        case 'office365':
+            debug('Office365 type alert')
+            if alert_json['data']['office365']['Operation'] == 'TIMailData':
+                recipients = alert_json['data']['office365']['Recipients']
+                msg_subject = alert_json['data']['office365']['Subject']
+                msg_id = alert_json['data']['office365']['InternetMessageId']
+                sender_ip = alert_json['data']['office365']['SenderIp']
+                verdict = alert_json['data']['office365']['Verdict']
+                deep_link = alert_json['data']['office365']['EventDeepLink']
+                tenant_id = alert_json['data']['office365']['OrganizationId']
+                agent_name = tenant_id
+                alert_message = "{0}\nRecipients: {1}\nSubject: {2}\nMessage ID: {3}\nSender IP: {4}\n{5}".format(description, recipients, msg_subject, msg_id, sender_ip, deep_link)
+        case 'vulnerability-detector':
+            condition = alert_json['data']['vulnerability']['package']['condition']
+            rationale = alert_json['data']['vulnerability']['rationale']
+            severity = alert_json['data']['vulnerability']['severity']
+
+            alert_message = "{0}\nSeverity: {1}\n{2}\n{3}".format(description, severity, condition, rationale)
+        case _:
+            alert_message = alert_json['full_log']
 
     asset = get_asset(base_url, api_key, agent_name)
 
     if (asset['meta']['total_entries']):
         # We have an asset
+        debug("Asset found")
         asset_id = asset['assets'][0]['id']
         customer_id = asset['assets'][0]['customer_id']
     else:
@@ -93,24 +100,28 @@ def main(args):
         customer_id = get_customer(base_url, api_key, tenant_id)['id']
         asset_id = ''
     
+    debug("Asset ID: {0}, Customer ID: {1}".format(asset_id, customer_id))
     create_alert(base_url, api_key, asset_id, customer_id, alert_message)
 
 def get_customer(base_url, api_key, tenant_id):
+    debug("Getting customer")
     response = requests.get('{0}/customers'.format(base_url), headers=headers)
-    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+    debug(response.text)
     customers = json.loads(response.text)['customers']
     return list(filter(lambda customer: 'MS365 Tenant ID' in customer['properties'] and customer['properties']['MS365 Tenant ID'] == tenant_id, customers))[0]
 
 
 def get_asset(base_url, api_key, agent_name):
+    debug("Getting asset")
     params = {
         'query': agent_name,
     }
     response = requests.get('{0}/customer_assets'.format(base_url), params=params, headers=headers)
-    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+    debug(response.text)
     return json.loads(response.text)
 
 def create_alert(base_url, api_key, asset_id, customer_id, message):
+    debug("Creating alert")
     data = {
         'customer_id': customer_id,
         'asset_id': asset_id,
@@ -121,7 +132,7 @@ def create_alert(base_url, api_key, asset_id, customer_id, message):
         'formatted_output': message
     }
     response = requests.post('{0}/rmm_alerts'.format(base_url), json=data, headers=headers)
-    debug(json.dumps(json.loads(response.text), sort_keys=True, indent=4, separators=(",", ": ")))
+    debug(response.text)
 
 
 def debug(msg):
